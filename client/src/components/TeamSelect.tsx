@@ -14,7 +14,8 @@ export const TeamSelect: React.FC<Props> = ({ room, playerName, socket }) => {
   const me = room.players.find(p => p.name === playerName);
 
   useEffect(() => {
-    fetch('http://localhost:3001/api/characters')
+    const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+    fetch(`${apiUrl}/api/characters`)
       .then(res => res.json())
       .then(data => setCharacters(data));
   }, []);
