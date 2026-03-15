@@ -107,6 +107,15 @@ export class RoomManager {
       }
     } else {
       this.io.to(socketId).emit('action_accepted');
+
+      // CELLパッシブ: 相手の行動が確定していたら、CELL側に通知
+      for (const p of room.players) {
+        if (p.id === socketId) continue;
+        const oppAction = room.engine.getOpponentAction(p.id);
+        if (oppAction) {
+          this.io.to(p.id).emit('cell_passive_reveal', oppAction);
+        }
+      }
     }
   }
 
