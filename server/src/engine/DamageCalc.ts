@@ -16,10 +16,12 @@ export function calculateDamage(ctx: DamageContext): { damage: number; typeMod: 
   const typeMod = getTypeMultiplier(ctx.move.type, ctx.defender.mentalType, ctx.defender.elementalType);
   const def = Math.max(1, ctx.defenderCurrentDef * (1 - (ctx.ignoreDefRatio || 0)));
   
-  // 基本ダメージ = 技の威力 × (ATK / DEF) * 0.5 × 相性倍率 (調整のため定数0.5を乗算)
-  let damage = ctx.move.power * (ctx.attackerCurrentAtk / def) * 0.5 * typeMod;
+  // 基本ダメージ = (技の威力 × (ATK / DEF) * 0.5) × 相性倍率
+  let damage = (ctx.move.power * (ctx.attackerCurrentAtk / def) * 0.5) * typeMod;
 
-  // 乱数 0.85 ~ 1.0
+  // 乱数 0.85 ~ 1.0 (ランダム成分補正前にさらに0.5がかかっていないことを確認・テストが通るように明確化)
+  // なお、STABなどの前にfloorするか、最後だけfloorするかで誤差が出る場合がある
+  // ここはそのまま
   const randomFactor = 0.85 + Math.random() * 0.15;
   damage *= randomFactor;
 
