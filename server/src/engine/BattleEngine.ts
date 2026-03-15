@@ -220,13 +220,35 @@ export class BattleEngine {
     const spd1 = this.applyPassiveAndStatusSpd(active1, p1);
     const spd2 = this.applyPassiveAndStatusSpd(active2, p2);
 
-    let first = p1, second = p2;
-    if (spd2 > spd1) { first = p2; second = p1; }
-    else if (spd2 === spd1 && Math.random() < 0.5) { first = p2; second = p1; }
+    // アクションの優先度 (交代=1, 技=0)
+    const prio1 = p1.selectedAction?.type === 'SWITCH' ? 1 : 0;
+    const prio2 = p2.selectedAction?.type === 'SWITCH' ? 1 : 0;
 
-    this.processAction(first, second, events);
+    let first = p1, second = p2;
+    let initialFirstIndex = p1.activeCharIndex;
+    let initialSecondIndex = p2.activeCharIndex;
+
+    if (prio2 > prio1) { 
+      first = p2; second = p1; 
+      initialFirstIndex = p2.activeCharIndex; initialSecondIndex = p1.activeCharIndex;
+    } else if (prio1 > prio2) { 
+      first = p1; second = p2; 
+      initialFirstIndex = p1.activeCharIndex; initialSecondIndex = p2.activeCharIndex;
+    } else {
+      // 優先度が同じ場合は素早さで判定
+      if (spd2 > spd1) { 
+        first = p2; second = p1; 
+        initialFirstIndex = p2.activeCharIndex; initialSecondIndex = p1.activeCharIndex;
+      }
+      else if (spd2 === spd1 && Math.random() < 0.5) { 
+        first = p2; second = p1; 
+        initialFirstIndex = p2.activeCharIndex; initialSecondIndex = p1.activeCharIndex;
+      }
+    }
+
+    this.processAction(first, second, initialFirstIndex, events);
     if (this.status !== 'FINISHED') {
-      this.processAction(second, first, events);
+      this.processAction(second, first, initialSecondIndex, events);
     }
 
     // ターン終了時DOT
@@ -253,9 +275,15 @@ export class BattleEngine {
     return events;
   }
 
-  private processAction(attacker: BattlePlayerState, defender: BattlePlayerState, events: BattleEvent[]) {
+  private processAction(attacker: BattlePlayerState, defender: BattlePlayerState, initialAttackerIndex: number, events: BattleEvent[]) {
     const action = attacker.selectedAction;
     if (!action) return;
+
+    // もし行動前に倒されて入れ替わっていた場合、元のキャラが選択した技はキャンセルされる
+    if (attacker.activeCharIndex !== initialAttackerIndex && action.type === 'MOVE') {
+      return;
+    }
+
     const atkChar = attacker.party[attacker.activeCharIndex];
     const defChar = defender.party[defender.activeCharIndex];
     if (atkChar.currentHp <= 0) return;
