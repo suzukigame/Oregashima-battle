@@ -21,6 +21,7 @@ export interface CharacterState {
   sp: number;
   moveIds: string[];
   passiveId: string;
+  switchInTurn: boolean; // 交代で場に出たターンかどうか（ちゃーこパッシブ用）
 }
 
 export interface BattlePlayerState {
@@ -36,6 +37,7 @@ export type BattleEvent =
   | { type: 'TURN_START'; turn: number }
   | { type: 'SP_GAIN'; playerId: string; charName: string; newSp: number }
   | { type: 'MOVE_ANNOUNCE'; attackerId: string; charName: string; moveName: string }
+  | { type: 'MOVE_MISS'; attackerId: string; charName: string; moveName: string }
   | { type: 'DAMAGE'; targetId: string; charName: string; damage: number; newHp: number; maxHp: number; effectiveness: 'super' | 'resist' | 'normal'; isCrit: boolean }
   | { type: 'HEAL'; playerId: string; charName: string; amount: number; newHp: number; maxHp: number }
   | { type: 'STATUS_APPLY'; targetId: string; charName: string; condition: string }
@@ -49,6 +51,7 @@ export type BattleEvent =
   | { type: 'FORM_CHANGE'; playerId: string; fromName: string; toName: string; newCharState: CharacterState }
   | { type: 'SP_SHORTAGE'; playerId: string; charName: string; moveName: string }
   | { type: 'SUICIDE'; playerId: string; charName: string; newHp: number }
+  | { type: 'PASSIVE_TRIGGER'; playerId: string; charName: string; passiveName: string; description: string }
   | { type: 'GAME_END'; winnerId: string; winnerName: string }
   | { type: 'TURN_END' };
 
@@ -102,8 +105,9 @@ export class BattleEngine {
       currentHp: base.baseStats.hp, maxHp: base.baseStats.hp,
       currentAtk: base.baseStats.atk, currentDef: base.baseStats.def, currentSpd: base.baseStats.spd,
       baseAtk: base.baseStats.atk, baseDef: base.baseStats.def, baseSpd: base.baseStats.spd,
-      statusCondition: null, sp: 0,
+      statusCondition: null, sp: 2,
       moveIds: base.moveIds, passiveId: base.passiveId,
+      switchInTurn: false,
     };
   }
 
@@ -166,6 +170,24 @@ export class BattleEngine {
     // 状態異常とSPは引き継ぎ
   }
 
+  private applyPassiveAndStatusSpd(char: CharacterState, player: BattlePlayerState): number {
+    let spd = char.currentSpd;
+    // 麻痺: SPD半減
+    if (char.statusCondition === '麻痺') {
+      spd *= 0.5;
+    }
+    // パッシブ: 背水のダンディズム (すぱろー)
+    if (char.passiveId === 'p_sparrow' && char.currentHp === 1) {
+      spd *= 2.0;
+    }
+    // パッシブ: 不滅のアイドル (どーじ)
+    if (char.passiveId === 'p_doji') {
+      const aliveCount = player.party.filter(c => c.currentHp > 0).length;
+      if (aliveCount === 1) spd *= 1.5;
+    }
+    return Math.floor(spd);
+  }
+
   public submitAction(playerId: string, action: { type: 'MOVE'; moveId: string } | { type: 'SWITCH'; index: number }): { events: BattleEvent[]; snapshot: BattleSnapshot } | null {
     const p = this.players[playerId];
     if (!p || this.status === 'FINISHED') return null;
@@ -194,10 +216,13 @@ export class BattleEngine {
     active2.sp = Math.min(5, active2.sp + 1);
     events.push({ type: 'SP_GAIN', playerId: p2.id, charName: active2.name, newSp: active2.sp });
 
-    // 素早さ順
+    // 素早さ順判定 (パッシブと麻痺を考慮)
+    const spd1 = this.applyPassiveAndStatusSpd(active1, p1);
+    const spd2 = this.applyPassiveAndStatusSpd(active2, p2);
+
     let first = p1, second = p2;
-    if (active2.currentSpd > active1.currentSpd) { first = p2; second = p1; }
-    else if (active2.currentSpd === active1.currentSpd && Math.random() < 0.5) { first = p2; second = p1; }
+    if (spd2 > spd1) { first = p2; second = p1; }
+    else if (spd2 === spd1 && Math.random() < 0.5) { first = p2; second = p1; }
 
     this.processAction(first, second, events);
     if (this.status !== 'FINISHED') {
@@ -212,6 +237,15 @@ export class BattleEngine {
 
     first.selectedAction = undefined;
     second.selectedAction = undefined;
+
+    // ターン終了時にswitchInTurnフラグをリセット
+    for (const id of ids) {
+      const p = this.players[id];
+      for (const c of p.party) {
+        c.switchInTurn = false;
+      }
+    }
+
     this.turn++;
     this.checkWinCondition(events);
 
@@ -246,6 +280,7 @@ export class BattleEngine {
     if (action.type === 'SWITCH') {
       attacker.activeCharIndex = action.index;
       const newChar = attacker.party[action.index];
+      newChar.switchInTurn = true; // ちゃーこパッシブ用フラグ
       events.push({ type: 'SWITCH', playerId: attacker.id, charName: newChar.name });
       // 交代後のフォームチェンジ判定
       this.checkFormChange(attacker, events);
@@ -267,6 +302,38 @@ export class BattleEngine {
     const defenderCharData = characters.find(c => c.id === defChar.id)!;
     const hits = move.effectType === 'MULTI_HIT' ? (move.effectParams?.hits || 1) : 1;
 
+    // --- パッシブと状態異常によるステータス計算 ---
+    let finalAtk = atkChar.currentAtk;
+    let finalDef = defChar.currentDef;
+
+    // 攻撃側パッシブ
+    const aliveCount = attacker.party.filter(c => c.currentHp > 0).length;
+    if (atkChar.passiveId === 'p_sparrow' && atkChar.currentHp === 1) finalAtk *= 2;
+    if (atkChar.passiveId === 'p_aries' && atkChar.statusCondition) finalAtk *= 1.2;
+    if (atkChar.passiveId === 'p_doji' && aliveCount === 1) finalAtk *= 1.5;
+    if (atkChar.passiveId === 'p_gocho') {
+      const ratio = atkChar.currentHp / atkChar.maxHp;
+      if (ratio <= 0.5) { finalAtk *= 1.3; finalDef *= 1.3; } // 半分以下で1.3倍
+    }
+    if (atkChar.passiveId === 'p_yamigocho' && (atkChar.currentHp / atkChar.maxHp) <= 0.5) finalAtk *= 1.5;
+
+    // 防御側パッシブ
+    const defAliveCount = defender.party.filter(c => c.currentHp > 0).length;
+    if (defChar.passiveId === 'p_doji' && defAliveCount === 1) finalDef *= 1.5;
+
+    // 命中判定（暗闇と技のaccuracy）
+    let accuracy = move.effectParams?.accuracy || 100;
+    if (atkChar.statusCondition === '暗闇') accuracy *= 0.75; // 暗闇なら命中1/4減
+
+    if (Math.random() * 100 > accuracy) {
+      events.push({ type: 'MOVE_MISS', attackerId: attacker.id, charName: atkChar.name, moveName: move.name });
+      if (move.effectType === 'RECOIL' && move.effectParams?.recoilIfMiss) {
+        atkChar.currentHp = Math.max(0, atkChar.currentHp - move.effectParams.recoilIfMiss);
+        events.push({ type: 'RECOIL', playerId: attacker.id, charName: atkChar.name, damage: move.effectParams.recoilIfMiss, newHp: atkChar.currentHp });
+      }
+      return; // 技を外した
+    }
+
     for (let i = 0; i < hits; i++) {
       if (defChar.currentHp <= 0) break;
       const ignoreDefRatio = move.effectType === 'IGNORE_DEF' ? (move.effectParams?.ratio || 0) : 0;
@@ -274,13 +341,26 @@ export class BattleEngine {
       if (move.power > 0) {
         const result = calculateDamage({
           attacker: attackerCharData, defender: defenderCharData, move,
-          attackerCurrentAtk: atkChar.currentAtk, defenderCurrentDef: defChar.currentDef, ignoreDefRatio,
+          attackerCurrentAtk: finalAtk, defenderCurrentDef: finalDef, ignoreDefRatio,
         });
-        defChar.currentHp = Math.max(0, defChar.currentHp - result.damage);
+
+        // パッシブ: やもり、まるはちのダメージ補正 (防御側が状態異常ならダメージUP)
+        let finalDamage = result.damage;
+        if (defChar.statusCondition) {
+          if (atkChar.passiveId === 'p_yamori') finalDamage = Math.floor(finalDamage * 1.2);
+          if (atkChar.passiveId === 'p_maruhachi') finalDamage = Math.floor(finalDamage * 1.15);
+        }
+
+        // パッシブ: 揺るがぬカプ愛 (ちゃーこ) - 交代で出た最初のターン、被ダメ30%軽減
+        if (defChar.passiveId === 'p_chaako' && defChar.switchInTurn) {
+          finalDamage = Math.floor(finalDamage * 0.7);
+        }
+
+        defChar.currentHp = Math.max(0, defChar.currentHp - finalDamage);
         let effectiveness: 'super' | 'resist' | 'normal' = 'normal';
         if (result.typeMod > 1) effectiveness = 'super';
         if (result.typeMod < 1) effectiveness = 'resist';
-        events.push({ type: 'DAMAGE', targetId: defender.id, charName: defChar.name, damage: result.damage, newHp: defChar.currentHp, maxHp: defChar.maxHp, effectiveness, isCrit: result.isCrit });
+        events.push({ type: 'DAMAGE', targetId: defender.id, charName: defChar.name, damage: finalDamage, newHp: defChar.currentHp, maxHp: defChar.maxHp, effectiveness, isCrit: result.isCrit });
       }
     }
 
@@ -339,7 +419,16 @@ export class BattleEngine {
 
   private processEndOfTurnStatus(player: BattlePlayerState, events: BattleEvent[]) {
     const char = player.party[player.activeCharIndex];
-    if (char.currentHp <= 0 || !char.statusCondition) return;
+    if (char.currentHp <= 0) return;
+
+    // パッシブ: 瑞兆の予報 (ゆきしろ) 10%でSP+1
+    if (char.passiveId === 'p_yukishiro' && Math.random() < 0.1) {
+      char.sp = Math.min(5, char.sp + 1);
+      events.push({ type: 'SP_GAIN', playerId: player.id, charName: char.name, newSp: char.sp });
+    }
+
+    if (!char.statusCondition) return;
+
     const dot = applyStatusDamage(char.statusCondition, char.maxHp);
     if (dot > 0) {
       char.currentHp = Math.max(0, char.currentHp - dot);
@@ -390,5 +479,29 @@ export class BattleEngine {
     if (!p) return [];
     const active = p.party[p.activeCharIndex];
     return active.moveIds.map(mid => moves.find(m => m.id === mid)!).filter(Boolean);
+  }
+
+  // CELLパッシブ: 相手が選択した技を取得する
+  public getOpponentAction(playerId: string): string | null {
+    const ids = Object.keys(this.players);
+    const opponentId = ids.find(id => id !== playerId);
+    if (!opponentId) return null;
+
+    const player = this.players[playerId];
+    const active = player?.party[player.activeCharIndex];
+    if (!active || active.passiveId !== 'p_cell') return null;
+
+    const opponent = this.players[opponentId];
+    const oppAction = opponent?.selectedAction;
+    if (!oppAction) return null;
+
+    if (oppAction.type === 'MOVE') {
+      const move = moves.find(m => m.id === oppAction.moveId);
+      return move ? `相手は「${move.name}」を選択` : null;
+    } else if (oppAction.type === 'SWITCH') {
+      const switchTo = opponent.party[oppAction.index];
+      return switchTo ? `相手は「${switchTo.name}」に交代` : null;
+    }
+    return null;
   }
 }

@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import { RoomManager } from './rooms/RoomManager';
 import { characters } from './data/characters';
 import { moves } from './data/moves';
+import { passives } from './data/passives';
 
 dotenv.config();
 
@@ -18,6 +19,10 @@ app.get('/api/characters', (_req, res) => {
 
 app.get('/api/moves', (_req, res) => {
   res.json(moves);
+});
+
+app.get('/api/passives', (_req, res) => {
+  res.json(passives);
 });
 
 const server = http.createServer(app);

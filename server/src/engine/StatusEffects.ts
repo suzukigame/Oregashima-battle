@@ -27,6 +27,8 @@ export function evaluateStatusAction(condition: StatusCondition): { canMove: boo
         selfDamage = 15; // 暫定固定ダメージ
       }
     }
+  } else if (condition === '暗闇') {
+    isHealed = Math.random() < 0.2; // 20%で治る (行動不能にはならない)
   }
 
   return { canMove, selfDamage, isHealed };

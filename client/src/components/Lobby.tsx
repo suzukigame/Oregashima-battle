@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Socket } from 'socket.io-client';
+import { HelpModal } from './HelpModal';
 
 interface LobbyProps {
   socket: Socket | null;
@@ -10,6 +11,7 @@ export const Lobby: React.FC<LobbyProps> = ({ socket, onJoinSuccess }) => {
   const [playerName, setPlayerName] = useState('');
   const [roomId, setRoomId] = useState('');
   const [error, setError] = useState('');
+  const [showHelp, setShowHelp] = useState(false);
 
   const handleJoin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -28,7 +30,12 @@ export const Lobby: React.FC<LobbyProps> = ({ socket, onJoinSuccess }) => {
 
   return (
     <div className="lobby-container">
-      <h1>Oregashima Battle Stadium!!</h1>
+      <h1 className="lobby-title">Oregashima Battle Stadium!!</h1>
+      
+      <button className="manual-open-btn" onClick={() => setShowHelp(true)}>
+        📖 遊び方・相性表
+      </button>
+
       <form onSubmit={handleJoin} className="lobby-form">
         <div className="form-group">
           <label>プレイヤー名</label>
@@ -51,6 +58,8 @@ export const Lobby: React.FC<LobbyProps> = ({ socket, onJoinSuccess }) => {
         {error && <p className="error">{error}</p>}
         <button type="submit">ルームに入室</button>
       </form>
+
+      {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
     </div>
   );
 };

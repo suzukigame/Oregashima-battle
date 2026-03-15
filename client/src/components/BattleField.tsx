@@ -5,6 +5,7 @@ import { Socket } from 'socket.io-client';
 interface CharacterState {
   id: string; name: string; mentalType: string; elementalType: string;
   currentHp: number; maxHp: number; statusCondition: string | null; sp: number;
+  passiveId: string;
 }
 
 interface MoveData {
@@ -23,6 +24,7 @@ type BattleEvent =
   | { type: 'TURN_START'; turn: number }
   | { type: 'SP_GAIN'; playerId: string; charName: string; newSp: number }
   | { type: 'MOVE_ANNOUNCE'; attackerId: string; charName: string; moveName: string }
+  | { type: 'MOVE_MISS'; attackerId: string; charName: string; moveName: string }
   | { type: 'DAMAGE'; targetId: string; charName: string; damage: number; newHp: number; maxHp: number; effectiveness: 'super' | 'resist' | 'normal'; isCrit: boolean }
   | { type: 'HEAL'; playerId: string; charName: string; amount: number; newHp: number; maxHp: number }
   | { type: 'STATUS_APPLY'; targetId: string; charName: string; condition: string }
@@ -36,6 +38,7 @@ type BattleEvent =
   | { type: 'FORM_CHANGE'; playerId: string; fromName: string; toName: string; newCharState: CharacterState }
   | { type: 'SP_SHORTAGE'; playerId: string; charName: string; moveName: string }
   | { type: 'SUICIDE'; playerId: string; charName: string; newHp: number }
+  | { type: 'PASSIVE_TRIGGER'; playerId: string; charName: string; passiveName: string; description: string }
   | { type: 'GAME_END'; winnerId: string; winnerName: string }
   | { type: 'TURN_END' };
 
@@ -49,6 +52,7 @@ function eventToMessage(e: BattleEvent): string | null {
   switch (e.type) {
     case 'TURN_START': return `--- ターン ${e.turn} ---`;
     case 'MOVE_ANNOUNCE': return `${e.charName}の ${e.moveName}！`;
+    case 'MOVE_MISS': return `${e.charName}の ${e.moveName}…しかし外れた！`;
     case 'DAMAGE': {
       let msg = `${e.charName}に ${e.damage} ダメージ！`;
       if (e.effectiveness === 'super') msg += ' 効果抜群！';
@@ -68,6 +72,7 @@ function eventToMessage(e: BattleEvent): string | null {
     case 'FORM_CHANGE': return `✨ ${e.fromName}は ${e.toName}にフォームチェンジ！`;
     case 'SP_SHORTAGE': return `SPが足りない！ ${e.moveName}は使えなかった`;
     case 'SUICIDE': return `${e.charName}のHPが ${e.newHp} になった！`;
+    case 'PASSIVE_TRIGGER': return `✨ [${e.passiveName}] ${e.description}`;
     case 'GAME_END': return `🏆 ${e.winnerName}の勝利！`;
     default: return null;
   }
@@ -78,6 +83,7 @@ function getEventDelay(e: BattleEvent): number {
   switch (e.type) {
     case 'TURN_START': return 600;
     case 'MOVE_ANNOUNCE': return 1200;
+    case 'MOVE_MISS': return 1200;
     case 'DAMAGE': return 1000;
     case 'HEAL': return 800;
     case 'FAINT': return 1200;
@@ -87,6 +93,7 @@ function getEventDelay(e: BattleEvent): number {
     case 'STATUS_APPLY': return 800;
     case 'DOT_DAMAGE': return 800;
     case 'RECOIL': return 600;
+    case 'PASSIVE_TRIGGER': return 800;
     default: return 400;
   }
 }
@@ -274,12 +281,31 @@ export const BattleField: React.FC<Props> = ({ socket, initData }) => {
       processEventQueue(data.events, data.snapshot, data.moves);
     });
     socket.on('action_accepted', () => { setWaiting(true); });
-    return () => { socket.off('battle_update'); socket.off('action_accepted'); };
+    socket.on('cell_passive_reveal', (msg: string) => {
+      setAllLogs(prev => [...prev, `👁️ [解釈一致の眼差し] ${msg}`]);
+    });
+    return () => { socket.off('battle_update'); socket.off('action_accepted'); socket.off('cell_passive_reveal'); };
   }, [socket, processEventQueue]);
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [allLogs]);
+
+  // パッシブ情報取得用
+  const [passives, setPassives] = useState<Record<string, { name: string; description: string }>>({});
+
+  useEffect(() => {
+    const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+    fetch(`${apiUrl}/api/passives`)
+      .then(res => res.json())
+      .then(data => {
+        const map: Record<string, { name: string; description: string }> = {};
+        data.forEach((p: any) => {
+          map[p.id] = { name: p.name, description: p.description };
+        });
+        setPassives(map);
+      });
+  }, []);
 
   // ===== レンダリング =====
   if (!snapshot || !myId) {
@@ -327,26 +353,46 @@ export const BattleField: React.FC<Props> = ({ socket, initData }) => {
     const types = displayTypes[playerId] || { mental: player.active.mentalType, elemental: player.active.elementalType };
     const isShaking = shakeTarget === playerId;
     const isFormChanging = formChangeFlash === playerId;
+    const activeCharId = player.active.id;
+    const passive = passives[player.active.passiveId];
 
     return (
       <div className={`battle-side ${isOpponent ? 'opponent-side' : 'my-side'} ${isShaking ? 'shake' : ''} ${isFormChanging ? 'form-change-flash' : ''}`}>
         <div className="char-info">
-          <h3>{charName} <span className="player-label">({player.name})</span></h3>
-          <div className="type-badges">
-            <span className="type-badge" style={{ background: getTypeColor(types.mental) }}>{types.mental}</span>
-            <span className="type-badge" style={{ background: getTypeColor(types.elemental) }}>{types.elemental}</span>
+          <div className="char-main-row">
+            <img 
+              src={`/assets/characters/${activeCharId}.png`} 
+              alt={charName} 
+              className="battle-char-img"
+              onError={(e) => { (e.target as HTMLImageElement).src = '/assets/vite.svg'; }}
+            />
+            <div className="char-stats-col">
+              <h3>{charName} <span className="player-label">({player.name})</span></h3>
+              <div className="type-badges">
+                <span className="type-badge" style={{ background: getTypeColor(types.mental) }}>{types.mental}</span>
+                <span className="type-badge" style={{ background: getTypeColor(types.elemental) }}>{types.elemental}</span>
+              </div>
+              {statusCond && <span className="status-badge">{statusCond}</span>}
+              <div className="hp-bar-container">
+                <div className="hp-bar" style={{
+                  width: `${(hp.hp / hp.max) * 100}%`,
+                  background: getHpColor(hp.hp, hp.max)
+                }} />
+              </div>
+              <div className="hp-text">
+                <span>HP: {hp.hp} / {hp.max}</span>
+                {!isOpponent && <span>SP: {sp}</span>}
+              </div>
+            </div>
           </div>
-          {statusCond && <span className="status-badge">{statusCond}</span>}
-          <div className="hp-bar-container">
-            <div className="hp-bar" style={{
-              width: `${(hp.hp / hp.max) * 100}%`,
-              background: getHpColor(hp.hp, hp.max)
-            }} />
-          </div>
-          <p className="hp-text">
-            HP: {hp.hp} / {hp.max}
-            {!isOpponent && ` | SP: ${sp}`}
-          </p>
+
+          {/* パッシブ表示 */}
+          {passive && (
+            <div className="passive-display">
+              <div className="passive-label">Passive: {passive.name}</div>
+              <div className="passive-content">{passive.description}</div>
+            </div>
+          )}
 
           {/* ダメージポップアップ */}
           {damagePopup && damagePopup.targetId === playerId && (
@@ -365,9 +411,10 @@ export const BattleField: React.FC<Props> = ({ socket, initData }) => {
   };
 
   // 交代可能なキャラを取得（現在のアクティブと戦闘不能を除く）
+  const activeCharIndexInParty = me.party.findIndex(p => p.id === me.active.id);
   const switchableChars = me.party
     .map((c, i) => ({ ...c, index: i }))
-    .filter((c, i) => i !== me.party.findIndex(p => p.id === me.active.id) && c.currentHp > 0);
+    .filter((c, i) => i !== activeCharIndexInParty && c.currentHp > 0);
 
   return (
     <div className={`battle-container ${flashType === 'super' ? 'flash-super' : ''} ${flashType === 'resist' ? 'flash-resist' : ''}`}>
